@@ -23,7 +23,7 @@ app.add_middleware(
 )
 
 s3 = boto3.client('s3', region_name='us-east-1', config=Config(signature_version=UNSIGNED))
-BUCKET = 'noaa-nexrad-level2'
+BUCKET = 'unidata-nexrad-level2'
 
 
 @app.get("/")
