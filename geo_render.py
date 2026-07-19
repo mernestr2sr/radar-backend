@@ -14,34 +14,24 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
 from palettes import (
-    VIPER_HD_REFL_CMAP, VIPER_HD_REFL_MIN, VIPER_HD_REFL_MAX, build_cmap,
+    VIPER_HD_REFL_CMAP, VIPER_HD_REFL_MIN, VIPER_HD_REFL_MAX,
+    AWIPS_EVANS_VEL_CMAP, AWIPS_EVANS_VEL_MIN, AWIPS_EVANS_VEL_MAX,
+    AWIPS_RHO_CC_CMAP, AWIPS_RHO_CC_MIN, AWIPS_RHO_CC_MAX,
+    build_cmap, MS_TO_KTS,
 )
 
 HALF_BOX_DEG = 2.5  # render a 5-degree square centered on the radar
 
-# --- default velocity palette (green inbound / red outbound), black at zero.
-# Placeholder until the Viper HD velocity table is supplied. m/s.
-VEL_ANCHORS = [
-    (-40, 0, 255, 255), (-30, 0, 128, 255), (-20, 0, 200, 0), (-10, 0, 110, 0),
-    (-1, 0, 40, 0), (0, 0, 0, 0), (1, 40, 0, 0), (10, 130, 0, 0),
-    (20, 220, 0, 0), (30, 255, 40, 40), (40, 255, 0, 255),
-]
-VEL_CMAP, VEL_MIN, VEL_MAX = build_cmap(VEL_ANCHORS)
-
-# --- correlation coefficient: low CC (debris/non-met) stands out dark/purple,
-# meteorological high CC ramps blue->green->yellow->red. Unitless (~0.2-1.05).
-CC_ANCHORS = [
-    (0.20, 20, 20, 20), (0.45, 90, 40, 130), (0.65, 40, 60, 200),
-    (0.80, 0, 180, 200), (0.90, 40, 210, 90), (0.95, 240, 240, 40),
-    (0.98, 255, 140, 0), (1.05, 220, 0, 0),
-]
-CC_CMAP, CC_MIN, CC_MAX = build_cmap(CC_ANCHORS)
+# Per-product multiplier applied to the raw Py-ART field before rendering.
+# Velocity: m/s -> knots (AWIPS Evans is a knots table; forecasters read knots).
+DATA_SCALE = {'velocity': MS_TO_KTS}
 
 # product -> (level2 field name, cmap, vmin, vmax)
+# reflectivity: Viper HD | velocity: AWIPS Evans | CC: AWIPS Rho (Matt's picks)
 PRODUCTS = {
     'reflectivity': ('reflectivity', VIPER_HD_REFL_CMAP, VIPER_HD_REFL_MIN, VIPER_HD_REFL_MAX),
-    'velocity':     ('velocity',     VEL_CMAP, VEL_MIN, VEL_MAX),
-    'cc':           ('cross_correlation_ratio', CC_CMAP, CC_MIN, CC_MAX),
+    'velocity':     ('velocity',     AWIPS_EVANS_VEL_CMAP, AWIPS_EVANS_VEL_MIN, AWIPS_EVANS_VEL_MAX),
+    'cc':           ('cross_correlation_ratio', AWIPS_RHO_CC_CMAP, AWIPS_RHO_CC_MIN, AWIPS_RHO_CC_MAX),
     'zdr':          ('differential_reflectivity', None, -4, 8),  # cmap filled below
 }
 # ZDR: simple perceptual ramp
@@ -76,6 +66,9 @@ def render_geo(radar, product, half_box=HALF_BOX_DEG):
     sweep = pick_sweep(radar, field)
     lat, lon, _ = radar.get_gate_lat_lon_alt(sweep)
     data = radar.get_field(sweep, field)
+    scale = DATA_SCALE.get(product)
+    if scale:
+        data = data * scale  # e.g. velocity m/s -> knots to match the knots palette
 
     rlat = float(radar.latitude['data'][0])
     rlon = float(radar.longitude['data'][0])

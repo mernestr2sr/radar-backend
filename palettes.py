@@ -56,3 +56,31 @@ def build_cmap(anchors):
 
 
 VIPER_HD_REFL_CMAP, VIPER_HD_REFL_MIN, VIPER_HD_REFL_MAX = build_cmap(VIPER_HD_REFL)
+
+
+# ---------------------------------------------------------------------------
+# AWIPS Evans base velocity (operational NWS table). Source: Wx Tools.
+# Native units are KNOTS — velocity is rendered in knots (Py-ART data is m/s and
+# gets converted with MS_TO_KTS in geo_render), so this table stays in knots.
+MS_TO_KTS = 1.943844
+AWIPS_EVANS_VEL_KT = [
+    (-120, 255, 0, 128), (-90.5, 0, 0, 160), (-70, 0, 224, 255),
+    (-69.99, 0, 255, 224), (-60, 0, 255, 225), (-59.99, 160, 255, 208),
+    (-50, 160, 255, 208), (-49.99, 160, 255, 208), (-40, 0, 255, 0),
+    (-10, 16, 96, 16), (-9.99, 16, 96, 16), (-0.01, 112, 128, 112),
+    (0, 144, 128, 144), (10, 112, 0, 0), (40, 255, 0, 0),
+    (48.6, 255, 0, 128), (49.5, 255, 0, 144), (69.99, 255, 196, 255),
+    (70, 255, 96, 0), (120, 255, 255, 0),
+]
+AWIPS_EVANS_VEL_CMAP, AWIPS_EVANS_VEL_MIN, AWIPS_EVANS_VEL_MAX = build_cmap(AWIPS_EVANS_VEL_KT)
+
+# ---------------------------------------------------------------------------
+# AWIPS Rho correlation coefficient (operational NWS table). Source: Wx Tools.
+# Ascending order; low CC (debris / non-met) reads blue, met rain red/pink.
+AWIPS_RHO_CC = [
+    (0.00, 15, 15, 140), (0.45, 15, 15, 140), (0.60, 10, 10, 190),
+    (0.75, 120, 120, 255), (0.80, 95, 245, 100), (0.85, 135, 215, 10),
+    (0.90, 255, 255, 0), (0.95, 255, 140, 0), (0.97, 225, 3, 0),
+    (0.99, 139, 30, 77), (1.00, 255, 180, 215), (1.05, 164, 54, 150),
+]
+AWIPS_RHO_CC_CMAP, AWIPS_RHO_CC_MIN, AWIPS_RHO_CC_MAX = build_cmap(AWIPS_RHO_CC)
