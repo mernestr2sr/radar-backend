@@ -70,12 +70,19 @@ def render_geo(radar, product, half_box=HALF_BOX_DEG):
     if scale:
         data = data * scale  # e.g. velocity m/s -> knots to match the knots palette
 
-    rlat = float(radar.latitude['data'][0])
-    rlon = float(radar.longitude['data'][0])
-    west, east = rlon - half_box, rlon + half_box
-    south, north = rlat - half_box, rlat + half_box
+    # Bounds from the actual gate extent (works for any product/range — Level 3
+    # products have different, non-square ranges). half_box kept as a fallback.
+    if np.ma.count(lat) and np.ma.count(lon):
+        south, north = float(np.nanmin(lat)), float(np.nanmax(lat))
+        west, east = float(np.nanmin(lon)), float(np.nanmax(lon))
+    else:
+        rlat = float(radar.latitude['data'][0]); rlon = float(radar.longitude['data'][0])
+        west, east = rlon - half_box, rlon + half_box
+        south, north = rlat - half_box, rlat + half_box
 
-    fig = plt.figure(figsize=(8, 8), dpi=150)
+    # 800x800 (8in @ 100dpi). Lower than before to cut render CPU + memory on
+    # small instances; plenty for a map overlay that gets scaled by Leaflet anyway.
+    fig = plt.figure(figsize=(8, 8), dpi=100)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
     ax.pcolormesh(lon, lat, data, cmap=cmap, vmin=vmin, vmax=vmax, shading='auto')
@@ -85,7 +92,7 @@ def render_geo(radar, product, half_box=HALF_BOX_DEG):
     buf = io.BytesIO()
     # NO bbox_inches='tight' — the axes fill the whole figure (add_axes([0,0,1,1])),
     # so the saved canvas maps exactly to xlim/ylim. Cropping would misalign bounds.
-    fig.savefig(buf, format='png', transparent=True, dpi=150)
+    fig.savefig(buf, format='png', transparent=True, dpi=100)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue(), [[south, west], [north, east]]

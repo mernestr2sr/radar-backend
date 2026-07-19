@@ -20,6 +20,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Bounds"],  # so the browser can read overlay bounds cross-origin
 )
 
 s3 = boto3.client('s3', region_name='us-east-1', config=Config(signature_version=UNSIGNED))
@@ -221,8 +222,9 @@ from geo_render import render_geo, HALF_BOX_DEG
 _radar_cache = {}   # s3_key -> (radar, atime)   — big objects, keep few
 _png_cache = {}     # (s3_key, product) -> (png, atime) — small, keep many
 _cache_lock = Lock()
-RADAR_CACHE_MAX = 2    # pyart radar objects are large (~100MB) — keep few for Railway RAM
-PNG_CACHE_MAX = 128    # rendered PNGs are small (~0.7MB) — the main replay accelerator
+RADAR_CACHE_MAX = 1    # pyart objects are ~150MB — hold only ONE so a small Railway
+                       # instance doesn't swap/OOM (multi-product of same scan still reuses it)
+PNG_CACHE_MAX = 128    # rendered PNGs are small (~0.4MB) — the main replay accelerator
 
 
 def _evict(d, maxn):
@@ -322,3 +324,111 @@ def geo_render_endpoint(product: str, key: str):
             _evict(_png_cache, PNG_CACHE_MAX)
     return Response(content=png, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+# ===== Level 3 rendering (small pre-derived products: CC, ZDR, SRV) =====
+# Level 3 files are ~120KB (vs Level 2's ~10MB) so this is fast and light — the
+# path that makes CC viable on a modest instance. pyart supports N0C/N0X/N0S.
+BUCKET_L3 = 'unidata-nexrad-level3'
+L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0S'}  # product name -> Level 3 code
+
+_l3_radar_cache = {}      # key -> (radar, atime) — L3 objects are small, keep several
+_l3_png_cache = {}        # (key, product) -> ((png, bounds), atime)
+L3_RADAR_CACHE_MAX = 6
+
+
+def _load_radar_l3(key):
+    with _cache_lock:
+        hit = _l3_radar_cache.get(key)
+        if hit:
+            _l3_radar_cache[key] = (hit[0], time.time())
+            return hit[0]
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.l3') as tmp:
+        s3.download_fileobj(BUCKET_L3, key, tmp)
+        path = tmp.name
+    radar = pyart.io.read_nexrad_level3(path)
+    os.unlink(path)
+    with _cache_lock:
+        _l3_radar_cache[key] = (radar, time.time())
+        _evict(_l3_radar_cache, L3_RADAR_CACHE_MAX)
+    return radar
+
+
+def _parse_ts_l3(key):
+    """SITE_CODE_YYYY_MM_DD_HH_MM_SS -> ISO (or None)."""
+    parts = key.split('_')
+    if len(parts) < 8:
+        return None
+    try:
+        dt = datetime.strptime('_'.join(parts[2:8]), "%Y_%m_%d_%H_%M_%S")
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+@app.get("/l3/scans/{site}/{product}")
+def l3_scans(site: str, product: str, start: str, end: str):
+    """List Level 3 scan keys+times for a 3-letter site + product over [start,end]."""
+    code = L3_CODE.get(product)
+    if not code:
+        raise HTTPException(status_code=400, detail=f"unknown product {product}")
+    try:
+        s = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+        e = datetime.fromisoformat(end.replace('Z', '+00:00')).replace(tzinfo=None)
+        site = site.upper()
+        scans, day = [], datetime(s.year, s.month, s.day)
+        while day <= e:
+            prefix = f"{site}_{code}_{day:%Y_%m_%d}"
+            token = None
+            while True:
+                kw = dict(Bucket=BUCKET_L3, Prefix=prefix, MaxKeys=1000)
+                if token:
+                    kw['ContinuationToken'] = token
+                resp = s3.list_objects_v2(**kw)
+                for obj in resp.get('Contents', []):
+                    iso = _parse_ts_l3(obj['Key'])
+                    if iso:
+                        t = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
+                        if s <= t <= e:
+                            scans.append({"ts": iso, "key": obj['Key']})
+                if resp.get('IsTruncated'):
+                    token = resp.get('NextContinuationToken')
+                else:
+                    break
+            day += timedelta(days=1)
+        scans.sort(key=lambda x: x['ts'])
+        return {"site": site, "product": product, "count": len(scans), "scans": scans}
+    except HTTPException:
+        raise
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@app.get("/l3/render/{product}")
+def l3_render(product: str, key: str):
+    """Render a Level 3 product to a geo-referenced PNG. Bounds (which vary by
+    product range) are returned in the X-Bounds header: 'south,west,north,east'."""
+    if product not in L3_CODE:
+        raise HTTPException(status_code=400, detail=f"unknown product {product}")
+    cache_id = (key, product)
+    with _cache_lock:
+        hit = _l3_png_cache.get(cache_id)
+        if hit:
+            _l3_png_cache[cache_id] = (hit[0], time.time())
+    if hit:
+        png, bounds = hit[0]
+    else:
+        try:
+            radar = _load_radar_l3(key)
+            png, bounds = render_geo(radar, product)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=f"Render error: {ex}")
+        with _cache_lock:
+            _l3_png_cache[cache_id] = ((png, bounds), time.time())
+            _evict(_l3_png_cache, PNG_CACHE_MAX)
+    (s, w), (n, e) = bounds
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400",
+                             "X-Bounds": f"{s},{w},{n},{e}"})
