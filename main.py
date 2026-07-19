@@ -217,7 +217,8 @@ def render(site: str, filename: str, product: str = "reflectivity", zoom: str = 
 import time
 from datetime import datetime, timedelta
 from threading import Lock
-from geo_render import render_geo, HALF_BOX_DEG
+from geo_render import render_geo, render_l3_velocity_metpy, HALF_BOX_DEG
+from metpy.io import Level3File
 
 _radar_cache = {}   # s3_key -> (radar, atime)   — big objects, keep few
 _png_cache = {}     # (s3_key, product) -> (png, atime) — small, keep many
@@ -326,18 +327,20 @@ def geo_render_endpoint(product: str, key: str):
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
-# ===== Level 3 rendering (small pre-derived products: CC, ZDR, SRV) =====
-# Level 3 files are ~120KB (vs Level 2's ~10MB) so this is fast and light — the
-# path that makes CC viable on a modest instance. pyart supports N0C/N0X/N0S.
+# ===== Level 3 rendering (small pre-derived products) =====
+# Level 3 files are ~120KB (vs Level 2's ~10MB) so this is fast and light.
+# CC (N0C) + ZDR (N0X) are read by pyart. Velocity uses N0G — true BASE velocity,
+# super-res — which pyart can't decode, so that one goes through MetPy.
 BUCKET_L3 = 'unidata-nexrad-level3'
-L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0S'}  # product name -> Level 3 code
+L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0G'}  # product name -> Level 3 code
+L3_METPY = {'velocity'}  # products decoded by MetPy instead of pyart
 
-_l3_radar_cache = {}      # key -> (radar, atime) — L3 objects are small, keep several
+_l3_radar_cache = {}      # key -> (obj, atime) — small L3 objects (pyart or metpy)
 _l3_png_cache = {}        # (key, product) -> ((png, bounds), atime)
 L3_RADAR_CACHE_MAX = 6
 
 
-def _load_radar_l3(key):
+def _load_l3(key, use_metpy):
     with _cache_lock:
         hit = _l3_radar_cache.get(key)
         if hit:
@@ -346,12 +349,12 @@ def _load_radar_l3(key):
     with tempfile.NamedTemporaryFile(delete=False, suffix='.l3') as tmp:
         s3.download_fileobj(BUCKET_L3, key, tmp)
         path = tmp.name
-    radar = pyart.io.read_nexrad_level3(path)
+    obj = Level3File(path) if use_metpy else pyart.io.read_nexrad_level3(path)
     os.unlink(path)
     with _cache_lock:
-        _l3_radar_cache[key] = (radar, time.time())
+        _l3_radar_cache[key] = (obj, time.time())
         _evict(_l3_radar_cache, L3_RADAR_CACHE_MAX)
-    return radar
+    return obj
 
 
 def _parse_ts_l3(key):
@@ -418,9 +421,13 @@ def l3_render(product: str, key: str):
     if hit:
         png, bounds = hit[0]
     else:
+        use_metpy = product in L3_METPY
         try:
-            radar = _load_radar_l3(key)
-            png, bounds = render_geo(radar, product)
+            obj = _load_l3(key, use_metpy)
+            if use_metpy:
+                png, bounds = render_l3_velocity_metpy(obj)   # true base velocity (N0G)
+            else:
+                png, bounds = render_geo(obj, product)        # CC / ZDR via pyart
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as ex:

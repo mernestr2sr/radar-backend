@@ -98,3 +98,40 @@ def render_geo(radar, product, range_km=300.0):
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue(), [[south, west], [north, east]]
+
+
+def render_l3_velocity_metpy(f, range_km=300.0):
+    """Render N0G TRUE BASE VELOCITY (super-res, 720 radials) decoded by MetPy.
+    pyart can't read code-154, so this path builds the polar->lat/lon grid from
+    MetPy's Level3File and renders it with the AWIPS Evans (knots) palette.
+    Returns (png_bytes, bounds) — same contract as render_geo."""
+    packet = f.sym_block[0][0]
+    az = np.radians(np.asarray(packet['start_az']))       # (nrad,)
+    data = f.map_data(np.asarray(packet['data']))         # (nrad, ngate) m/s, masked
+    ngate = data.shape[1]
+    rng = (np.arange(ngate) + 0.5) * (range_km * 1000.0 / ngate)  # gate-center meters
+    rlat, rlon = float(f.lat), float(f.lon)
+    # polar -> local ENU meters -> lat/lon
+    x = rng[None, :] * np.sin(az[:, None])
+    y = rng[None, :] * np.cos(az[:, None])
+    lat = rlat + (y / 1000.0) / 111.0
+    lon = rlon + (x / 1000.0) / (111.0 * np.cos(np.radians(rlat)))
+    kts = data * MS_TO_KTS
+
+    r_lat = range_km / 111.0
+    r_lon = range_km / (111.0 * np.cos(np.radians(rlat)))
+    south, north = rlat - r_lat, rlat + r_lat
+    west, east = rlon - r_lon, rlon + r_lon
+
+    fig = plt.figure(figsize=(8, 8), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    ax.pcolormesh(lon, lat, kts, cmap=AWIPS_EVANS_VEL_CMAP,
+                  vmin=AWIPS_EVANS_VEL_MIN, vmax=AWIPS_EVANS_VEL_MAX, shading='auto')
+    ax.set_xlim(west, east)
+    ax.set_ylim(south, north)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=True, dpi=100)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue(), [[south, west], [north, east]]
