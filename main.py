@@ -333,8 +333,8 @@ def geo_render_endpoint(product: str, key: str):
 # CC (N0C) + ZDR (N0X) are read by pyart. Velocity uses N0G — true BASE velocity,
 # super-res — which pyart can't decode, so that one goes through MetPy.
 BUCKET_L3 = 'unidata-nexrad-level3'
-L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0G', 'br': 'N0B'}  # product -> L3 code
-L3_METPY = {'velocity', 'br'}  # decoded by MetPy (pyart can't read N0G/N0B)
+L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'vel': 'N0G', 'br': 'N0B'}  # product -> L3 code
+L3_METPY = {'vel', 'br'}  # decoded by MetPy (pyart can't read N0G/N0B)
 
 _l3_radar_cache = {}      # key -> (obj, atime) — small L3 objects (pyart or metpy)
 _l3_png_cache = {}        # (key, product) -> ((png, bounds), atime)
@@ -432,7 +432,7 @@ def l3_render(product: str, key: str):
     else:
         use_metpy = product in L3_METPY
         try:
-            if product == 'velocity':
+            if product == 'vel':
                 fv = _load_l3(key, True)                               # N0G base velocity
                 # sibling refl (N0B) + CC (N0C) share the exact timestamp — just
                 # swap the code. Used to mask velocity to real precip (clean).
