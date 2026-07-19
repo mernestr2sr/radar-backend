@@ -1,0 +1,22 @@
+# Railpack (Railway's builder) auto-detects this file and passes it to mise.
+#
+# Why this exists: mise's GitHub SLSA attestation verification for the pinned
+# CPython download started failing (TSA timestamp error) and aborts the Python
+# install before any dependencies are installed — a mise/Railpack toolchain
+# change since the last good build, unrelated to app code. Disabling the
+# attestation check lets the pinned Python install proceed.
+#
+# runtime.txt still pins python-3.11.9 (correct for Railway — do not change it);
+# the version is mirrored here so adding this file can't shift the Python version
+# regardless of how Railpack merges the two sources.
+
+[tools]
+python = "3.11.9"
+
+[settings]
+# global SLSA provenance check for github-backend tools
+github_attestations = false
+
+[settings.python]
+# per-Python override (MISE_PYTHON_GITHUB_ATTESTATIONS) for the precompiled CPython
+github_attestations = false
