@@ -217,7 +217,8 @@ def render(site: str, filename: str, product: str = "reflectivity", zoom: str = 
 import time
 from datetime import datetime, timedelta
 from threading import Lock
-from geo_render import render_geo, render_l3_velocity_metpy, HALF_BOX_DEG
+from geo_render import (render_geo, render_l3_velocity_metpy,
+                        render_l3_reflectivity_metpy, HALF_BOX_DEG)
 from metpy.io import Level3File
 
 _radar_cache = {}   # s3_key -> (radar, atime)   — big objects, keep few
@@ -332,8 +333,8 @@ def geo_render_endpoint(product: str, key: str):
 # CC (N0C) + ZDR (N0X) are read by pyart. Velocity uses N0G — true BASE velocity,
 # super-res — which pyart can't decode, so that one goes through MetPy.
 BUCKET_L3 = 'unidata-nexrad-level3'
-L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0G'}  # product name -> Level 3 code
-L3_METPY = {'velocity'}  # products decoded by MetPy instead of pyart
+L3_CODE = {'cc': 'N0C', 'zdr': 'N0X', 'velocity': 'N0G', 'br': 'N0B'}  # product -> L3 code
+L3_METPY = {'velocity', 'br'}  # decoded by MetPy (pyart can't read N0G/N0B)
 
 _l3_radar_cache = {}      # key -> (obj, atime) — small L3 objects (pyart or metpy)
 _l3_png_cache = {}        # (key, product) -> ((png, bounds), atime)
@@ -431,13 +432,15 @@ def l3_render(product: str, key: str):
     else:
         use_metpy = product in L3_METPY
         try:
-            if use_metpy:
+            if product == 'velocity':
                 fv = _load_l3(key, True)                               # N0G base velocity
                 # sibling refl (N0B) + CC (N0C) share the exact timestamp — just
                 # swap the code. Used to mask velocity to real precip (clean).
                 fr = _try_load_l3(key.replace('_N0G_', '_N0B_'), True)
                 fc = _try_load_l3(key.replace('_N0G_', '_N0C_'), True)
                 png, bounds = render_l3_velocity_metpy(fv, fr, fc)
+            elif product == 'br':
+                png, bounds = render_l3_reflectivity_metpy(_load_l3(key, True))  # Viper HD refl
             else:
                 obj = _load_l3(key, False)
                 png, bounds = render_geo(obj, product)                # CC / ZDR via pyart

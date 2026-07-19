@@ -117,6 +117,40 @@ def _align_to(src, src_az, dst_az, ngate):
     return np.concatenate([out, pad], axis=1)
 
 
+def render_l3_reflectivity_metpy(f, range_km=300.0, px=1600):
+    """Render N0B super-res base reflectivity (decoded by MetPy) with the Viper HD
+    palette, to the fixed radar-centered box. Sliced to range_km so it shares the
+    same box as velocity/CC. Returns (png, bounds)."""
+    data, az = _metpy_radial(f)
+    ng = min(int(round(range_km / 0.25)), data.shape[1])  # 250m super-res gates
+    data = data[:, :ng]
+    rng = (np.arange(ng) + 0.5) * (range_km * 1000.0 / ng)
+    rlat, rlon = float(f.lat), float(f.lon)
+    x = rng[None, :] * np.sin(np.radians(az)[:, None])
+    y = rng[None, :] * np.cos(np.radians(az)[:, None])
+    lat = rlat + (y / 1000.0) / 111.0
+    lon = rlon + (x / 1000.0) / (111.0 * np.cos(np.radians(rlat)))
+
+    r_lat = range_km / 111.0
+    r_lon = range_km / (111.0 * np.cos(np.radians(rlat)))
+    south, north = rlat - r_lat, rlat + r_lat
+    west, east = rlon - r_lon, rlon + r_lon
+
+    dpi = 100
+    fig = plt.figure(figsize=(px / dpi, px / dpi), dpi=dpi)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    ax.pcolormesh(lon, lat, data, cmap=VIPER_HD_REFL_CMAP,
+                  vmin=VIPER_HD_REFL_MIN, vmax=VIPER_HD_REFL_MAX, shading='auto')
+    ax.set_xlim(west, east)
+    ax.set_ylim(south, north)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', transparent=True, dpi=dpi)
+    plt.close(fig)
+    buf.seek(0)
+    return buf.getvalue(), [[south, west], [north, east]]
+
+
 def render_l3_velocity_metpy(f, refl_f=None, cc_f=None, range_km=300.0,
                              refl_min=15.0, cc_min=0.80, px=1600):
     """Render N0G TRUE BASE VELOCITY (super-res, 720 radials) decoded by MetPy.
