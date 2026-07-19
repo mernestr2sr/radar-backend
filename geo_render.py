@@ -55,8 +55,11 @@ def pick_sweep(radar, field):
     return 0
 
 
-def render_geo(radar, product, half_box=HALF_BOX_DEG):
-    """Render one product from an open Py-ART radar. Returns (png_bytes, bounds)."""
+def render_geo(radar, product, range_km=300.0):
+    """Render one product from an open Py-ART radar. Returns (png_bytes, bounds).
+    Renders to a FIXED radar-centered box of `range_km` radius so bounds are
+    deterministic — the frontend can place the overlay from the radar's lat/lon
+    (no need to read them back), and the data circle sits exactly inside."""
     if product not in PRODUCTS:
         raise ValueError(f"unknown product {product}")
     field, cmap, vmin, vmax = PRODUCTS[product]
@@ -70,15 +73,14 @@ def render_geo(radar, product, half_box=HALF_BOX_DEG):
     if scale:
         data = data * scale  # e.g. velocity m/s -> knots to match the knots palette
 
-    # Bounds from the actual gate extent (works for any product/range — Level 3
-    # products have different, non-square ranges). half_box kept as a fallback.
-    if np.ma.count(lat) and np.ma.count(lon):
-        south, north = float(np.nanmin(lat)), float(np.nanmax(lat))
-        west, east = float(np.nanmin(lon)), float(np.nanmax(lon))
-    else:
-        rlat = float(radar.latitude['data'][0]); rlon = float(radar.longitude['data'][0])
-        west, east = rlon - half_box, rlon + half_box
-        south, north = rlat - half_box, rlat + half_box
+    # Fixed radar-centered box (deterministic). range_km -> degrees; lon scaled
+    # by latitude. The data circle fits inside; corners are transparent.
+    rlat = float(radar.latitude['data'][0])
+    rlon = float(radar.longitude['data'][0])
+    r_lat = range_km / 111.0
+    r_lon = range_km / (111.0 * np.cos(np.radians(rlat)))
+    south, north = rlat - r_lat, rlat + r_lat
+    west, east = rlon - r_lon, rlon + r_lon
 
     # 800x800 (8in @ 100dpi). Lower than before to cut render CPU + memory on
     # small instances; plenty for a map overlay that gets scaled by Leaflet anyway.
