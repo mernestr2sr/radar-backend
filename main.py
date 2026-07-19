@@ -207,3 +207,118 @@ def render(site: str, filename: str, product: str = "reflectivity", zoom: str = 
         return Response(content=buf.getvalue(), media_type="image/png")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Render error: {str(e)}")
+
+
+# ===== Geo-referenced Level 2 rendering (Viper HD / AWIPS palettes) =====
+# Serves map-ready overlays for RadarReplay. Bounds are deterministic (a
+# HALF_BOX_DEG square around the radar), so the frontend places the overlay
+# from the radar's own lat/lon — no need to ship bounds with each image.
+import time
+from datetime import datetime, timedelta
+from threading import Lock
+from geo_render import render_geo, HALF_BOX_DEG
+
+_radar_cache = {}   # s3_key -> (radar, atime)   — big objects, keep few
+_png_cache = {}     # (s3_key, product) -> (png, atime) — small, keep many
+_cache_lock = Lock()
+RADAR_CACHE_MAX = 3
+PNG_CACHE_MAX = 128
+
+
+def _evict(d, maxn):
+    while len(d) > maxn:
+        del d[min(d, key=lambda k: d[k][1])]
+
+
+def _load_radar(s3_key):
+    with _cache_lock:
+        hit = _radar_cache.get(s3_key)
+        if hit:
+            _radar_cache[s3_key] = (hit[0], time.time())
+            return hit[0]
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.ar2v') as tmp:
+        s3.download_fileobj(BUCKET, s3_key, tmp)
+        path = tmp.name
+    radar = pyart.io.read_nexrad_archive(path)
+    os.unlink(path)
+    with _cache_lock:
+        _radar_cache[s3_key] = (radar, time.time())
+        _evict(_radar_cache, RADAR_CACHE_MAX)
+    return radar
+
+
+def _parse_ts(key):
+    """SITEYYYYMMDD_HHMMSS_V06 -> ISO 'YYYY-MM-DDTHH:MM:SSZ' (or None).
+    e.g. KVNX20240507_000608_V06 : date is glued to the site in field 0."""
+    name = key.split('/')[-1]
+    parts = name.split('_')
+    if len(parts) < 2:
+        return None
+    try:
+        dt = datetime.strptime(parts[0][-8:] + parts[1], "%Y%m%d%H%M%S")
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+@app.get("/geo/scans/{site}")
+def geo_scans(site: str, start: str, end: str):
+    """Available Level 2 scan keys+times for a 4-letter site over [start,end]
+    (ISO, e.g. 2024-05-07T00:00Z). Frontend maps frames to the nearest ts."""
+    try:
+        s = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None)
+        e = datetime.fromisoformat(end.replace('Z', '+00:00')).replace(tzinfo=None)
+        site = site.upper()
+        scans, day = [], datetime(s.year, s.month, s.day)
+        while day <= e:
+            prefix = f"{day:%Y/%m/%d}/{site}/"
+            token = None
+            while True:
+                kw = dict(Bucket=BUCKET, Prefix=prefix, MaxKeys=1000)
+                if token:
+                    kw['ContinuationToken'] = token
+                resp = s3.list_objects_v2(**kw)
+                for obj in resp.get('Contents', []):
+                    key = obj['Key']
+                    if key.endswith('_MDM'):
+                        continue
+                    iso = _parse_ts(key)
+                    if iso:
+                        t = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
+                        if s <= t <= e:
+                            scans.append({"ts": iso, "key": key})
+                if resp.get('IsTruncated'):
+                    token = resp.get('NextContinuationToken')
+                else:
+                    break
+            day += timedelta(days=1)
+        scans.sort(key=lambda x: x['ts'])
+        return {"site": site, "count": len(scans), "scans": scans}
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex))
+
+
+@app.get("/geo/render/{product}")
+def geo_render_endpoint(product: str, key: str):
+    """Render one product from a Level 2 scan (by its S3 key) as a transparent,
+    geo-referenced PNG. Cached so replay/re-view is instant."""
+    cache_id = (key, product)
+    with _cache_lock:
+        hit = _png_cache.get(cache_id)
+        if hit:
+            _png_cache[cache_id] = (hit[0], time.time())
+    if hit:
+        png = hit[0]
+    else:
+        try:
+            radar = _load_radar(key)
+            png, _bounds = render_geo(radar, product)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as ex:
+            raise HTTPException(status_code=500, detail=f"Render error: {ex}")
+        with _cache_lock:
+            _png_cache[cache_id] = (png, time.time())
+            _evict(_png_cache, PNG_CACHE_MAX)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
