@@ -221,8 +221,8 @@ from geo_render import render_geo, HALF_BOX_DEG
 _radar_cache = {}   # s3_key -> (radar, atime)   — big objects, keep few
 _png_cache = {}     # (s3_key, product) -> (png, atime) — small, keep many
 _cache_lock = Lock()
-RADAR_CACHE_MAX = 3
-PNG_CACHE_MAX = 128
+RADAR_CACHE_MAX = 2    # pyart radar objects are large (~100MB) — keep few for Railway RAM
+PNG_CACHE_MAX = 128    # rendered PNGs are small (~0.7MB) — the main replay accelerator
 
 
 def _evict(d, maxn):
