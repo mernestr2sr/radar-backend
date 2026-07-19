@@ -100,30 +100,56 @@ def render_geo(radar, product, range_km=300.0):
     return buf.getvalue(), [[south, west], [north, east]]
 
 
-def render_l3_velocity_metpy(f, range_km=300.0):
+def _metpy_radial(f):
+    """(data, start_az) from a MetPy Level3File radial packet."""
+    p = f.sym_block[0][0]
+    return np.ma.asarray(f.map_data(np.asarray(p['data']))), np.asarray(p['start_az'])
+
+
+def _align_to(src, src_az, dst_az, ngate):
+    """Resample a product's radials to dst_az (nearest azimuth), slice to ngate.
+    Returns a plain array filled with -999 where missing (for thresholding)."""
+    idx = np.array([np.argmin(np.abs(((src_az - a + 180) % 360) - 180)) for a in dst_az])
+    out = np.ma.filled(src[idx], -999.0)
+    if out.shape[1] >= ngate:
+        return out[:, :ngate]
+    pad = np.full((out.shape[0], ngate - out.shape[1]), -999.0)
+    return np.concatenate([out, pad], axis=1)
+
+
+def render_l3_velocity_metpy(f, refl_f=None, cc_f=None, range_km=300.0,
+                             refl_min=15.0, cc_min=0.80, px=1600):
     """Render N0G TRUE BASE VELOCITY (super-res, 720 radials) decoded by MetPy.
-    pyart can't read code-154, so this path builds the polar->lat/lon grid from
-    MetPy's Level3File and renders it with the AWIPS Evans (knots) palette.
-    Returns (png_bytes, bounds) — same contract as render_geo."""
-    packet = f.sym_block[0][0]
-    az = np.radians(np.asarray(packet['start_az']))       # (nrad,)
-    data = f.map_data(np.asarray(packet['data']))         # (nrad, ngate) m/s, masked
-    ngate = data.shape[1]
-    rng = (np.arange(ngate) + 0.5) * (range_km * 1000.0 / ngate)  # gate-center meters
+    If refl_f (N0B) and/or cc_f (N0C) are supplied, mask velocity to only real
+    precip (refl >= refl_min AND CC >= cc_min) — removes bug/clutter speckle.
+    px controls output resolution (sharpness when zoomed). Returns (png, bounds)."""
+    vel, vaz = _metpy_radial(f)
+    ngate = vel.shape[1]
+    mask = np.ma.getmaskarray(vel).copy()
+    if refl_f is not None:
+        rd, raz = _metpy_radial(refl_f)
+        mask |= (_align_to(rd, raz, vaz, ngate) < refl_min)
+    if cc_f is not None:
+        cd, caz = _metpy_radial(cc_f)
+        mask |= (_align_to(cd, caz, vaz, ngate) < cc_min)
+    vel = np.ma.masked_array(np.ma.getdata(vel), mask)
+
+    az = np.radians(vaz)
+    rng = (np.arange(ngate) + 0.5) * (range_km * 1000.0 / ngate)
     rlat, rlon = float(f.lat), float(f.lon)
-    # polar -> local ENU meters -> lat/lon
     x = rng[None, :] * np.sin(az[:, None])
     y = rng[None, :] * np.cos(az[:, None])
     lat = rlat + (y / 1000.0) / 111.0
     lon = rlon + (x / 1000.0) / (111.0 * np.cos(np.radians(rlat)))
-    kts = data * MS_TO_KTS
+    kts = vel * MS_TO_KTS
 
     r_lat = range_km / 111.0
     r_lon = range_km / (111.0 * np.cos(np.radians(rlat)))
     south, north = rlat - r_lat, rlat + r_lat
     west, east = rlon - r_lon, rlon + r_lon
 
-    fig = plt.figure(figsize=(8, 8), dpi=100)
+    dpi = 100
+    fig = plt.figure(figsize=(px / dpi, px / dpi), dpi=dpi)
     ax = fig.add_axes([0, 0, 1, 1])
     ax.set_axis_off()
     ax.pcolormesh(lon, lat, kts, cmap=AWIPS_EVANS_VEL_CMAP,
@@ -131,7 +157,7 @@ def render_l3_velocity_metpy(f, range_km=300.0):
     ax.set_xlim(west, east)
     ax.set_ylim(south, north)
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', transparent=True, dpi=100)
+    fig.savefig(buf, format='png', transparent=True, dpi=dpi)
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue(), [[south, west], [north, east]]

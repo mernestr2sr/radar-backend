@@ -357,6 +357,14 @@ def _load_l3(key, use_metpy):
     return obj
 
 
+def _try_load_l3(key, use_metpy):
+    """Load a Level 3 sibling product; None if it doesn't exist (e.g. no CC)."""
+    try:
+        return _load_l3(key, use_metpy)
+    except Exception:
+        return None
+
+
 def _parse_ts_l3(key):
     """SITE_CODE_YYYY_MM_DD_HH_MM_SS -> ISO (or None)."""
     parts = key.split('_')
@@ -423,11 +431,16 @@ def l3_render(product: str, key: str):
     else:
         use_metpy = product in L3_METPY
         try:
-            obj = _load_l3(key, use_metpy)
             if use_metpy:
-                png, bounds = render_l3_velocity_metpy(obj)   # true base velocity (N0G)
+                fv = _load_l3(key, True)                               # N0G base velocity
+                # sibling refl (N0B) + CC (N0C) share the exact timestamp — just
+                # swap the code. Used to mask velocity to real precip (clean).
+                fr = _try_load_l3(key.replace('_N0G_', '_N0B_'), True)
+                fc = _try_load_l3(key.replace('_N0G_', '_N0C_'), True)
+                png, bounds = render_l3_velocity_metpy(fv, fr, fc)
             else:
-                png, bounds = render_geo(obj, product)        # CC / ZDR via pyart
+                obj = _load_l3(key, False)
+                png, bounds = render_geo(obj, product)                # CC / ZDR via pyart
         except ValueError as ve:
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as ex:
