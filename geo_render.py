@@ -117,13 +117,15 @@ def _align_to(src, src_az, dst_az, ngate):
     return np.concatenate([out, pad], axis=1)
 
 
-def render_l3_reflectivity_metpy(f, range_km=300.0, px=1600):
+def render_l3_reflectivity_metpy(f, range_km=300.0, px=1600, floor_dbz=10.0):
     """Render N0B super-res base reflectivity (decoded by MetPy) with the Viper HD
     palette, to the fixed radar-centered box. Sliced to range_km so it shares the
-    same box as velocity/CC. Returns (png, bounds)."""
+    same box as velocity/CC. floor_dbz hides weak returns (clear-air bug/clutter
+    haze) below the threshold. Returns (png, bounds)."""
     data, az = _metpy_radial(f)
     ng = min(int(round(range_km / 0.25)), data.shape[1])  # 250m super-res gates
     data = data[:, :ng]
+    data = np.ma.masked_where(np.ma.filled(data, -999.0) < floor_dbz, data)  # drop the haze
     rng = (np.arange(ng) + 0.5) * (range_km * 1000.0 / ng)
     rlat, rlon = float(f.lat), float(f.lon)
     x = rng[None, :] * np.sin(np.radians(az)[:, None])
